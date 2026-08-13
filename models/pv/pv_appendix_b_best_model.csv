@@ -1,0 +1,2 @@
+target_name,target_col,ghi_name,ghi_col,temp_name,temp_col,sample_count,train_count,test_count,train_rmse_kw,test_rmse_kw,train_mae_kw,test_mae_kw,train_r2,test_r2,a1,a2,a3
+pv_power_calculated_5min_kw,pv_power_calculated_5min_kw,ghi_5min_avg_wm2,ghi_5min_avg_wm2,toa_5min_avg_c,toa_5min_avg_c,59864,47891,11973,7.135311130945805,10.763829601726641,4.470138584075591,7.751275923784651,0.9950605610878486,0.9881171321370806,-5.807054421155893e-05,-0.0009463872346449909,0.4462711440770756
