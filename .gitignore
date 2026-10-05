@@ -59,17 +59,30 @@ paper_figures/
 *.grib
 *.grib2
 
-# Only curated model artifacts may use these data-like formats. Re-include the
-# parent directories so the exceptions also work if an ignored models/ rule is
-# introduced by a global or parent ignore file.
-!models/
-!models/**/
-!models/**/*.csv
-!models/**/*.json
+# Curated parameter artifacts only; never allow arbitrary data under models/.
 *.pt
 *.pth
-!models/**/*.pt
-!models/**/*.pth
+!models/
+!models/**/
+!models/pv/pv_appendix_b_best_model.csv
+!models/lstm64/scalers.json
+!models/thermal/ac_model.pth
+!models/thermal/nv_model.pth
+!models/lstm64/checkpoints/univariate/temperature/seed_17.pt
+!models/lstm64/checkpoints/univariate/temperature/seed_29.pt
+!models/lstm64/checkpoints/univariate/temperature/seed_43.pt
+!models/lstm64/checkpoints/univariate/relative_humidity/seed_17.pt
+!models/lstm64/checkpoints/univariate/relative_humidity/seed_29.pt
+!models/lstm64/checkpoints/univariate/relative_humidity/seed_43.pt
+!models/lstm64/checkpoints/univariate/wind_speed/seed_17.pt
+!models/lstm64/checkpoints/univariate/wind_speed/seed_29.pt
+!models/lstm64/checkpoints/univariate/wind_speed/seed_43.pt
+!models/lstm64/checkpoints/univariate/wind_direction/seed_17.pt
+!models/lstm64/checkpoints/univariate/wind_direction/seed_29.pt
+!models/lstm64/checkpoints/univariate/wind_direction/seed_43.pt
+!models/lstm64/checkpoints/univariate/solar/seed_17.pt
+!models/lstm64/checkpoints/univariate/solar/seed_29.pt
+!models/lstm64/checkpoints/univariate/solar/seed_43.pt
 
 # Python, notebooks, and test caches
 .venv/

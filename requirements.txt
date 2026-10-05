@@ -1,10 +1,11 @@
-# Supported interpreter: Python 3.11
+# Supported interpreter: Python 3.11; CPU build matches the final study.
+--extra-index-url https://download.pytorch.org/whl/cpu
 numpy==2.2.6
 pandas==3.0.3
 matplotlib==3.10.9
 scipy==1.17.1
 scikit-learn==1.8.0
-torch==2.12.0
+torch==2.12.0+cpu
 pythermalcomfort==3.9.8
 gurobipy==13.0.2
 Pillow==12.2.0

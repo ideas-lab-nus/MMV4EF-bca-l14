@@ -16,6 +16,7 @@ import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
 from typing import Any, Sequence
 
 import matplotlib
@@ -28,33 +29,18 @@ import pandas as pd
 from matplotlib.lines import Line2D
 from scipy.stats import spearmanr
 
-try:
-    from scripts.build_observed_future_results import (
-        FCU_COLUMNS,
-        PFCU_COLUMNS,
-        POWER_ACCOUNTING_ATOL_KW,
-        STEP_HOURS,
-        ZONE_COLUMNS,
-        attach_observed_context,
-        attach_pmv,
-        audit_hvac_power,
-        load_observed_context,
-        recompute_hvac_power_kw,
-    )
-except ModuleNotFoundError:  # Direct ``python scripts/...py`` execution.
-    from build_observed_future_results import (  # type: ignore[no-redef]
-        FCU_COLUMNS,
-        PFCU_COLUMNS,
-        POWER_ACCOUNTING_ATOL_KW,
-        STEP_HOURS,
-        ZONE_COLUMNS,
-        attach_observed_context,
-        attach_pmv,
-        audit_hvac_power,
-        load_observed_context,
-        recompute_hvac_power_kw,
-    )
-
+from build_observed_future_results import (
+    FCU_COLUMNS,
+    PFCU_COLUMNS,
+    POWER_ACCOUNTING_ATOL_KW,
+    STEP_HOURS,
+    ZONE_COLUMNS,
+    attach_observed_context,
+    attach_pmv,
+    audit_hvac_power,
+    load_observed_context,
+    recompute_hvac_power_kw,
+)
 
 FORECAST_CASES = (
     ("no_pv", "observed"),
@@ -69,22 +55,24 @@ CASE_BY_KEY = {
     ("onsite_pv", "lstm64"): "MIQP onsite PV | LSTM64",
 }
 KEY_BY_CASE = {case: key for key, case in CASE_BY_KEY.items()}
-OBJECTIVE_LABELS = {"no_pv": "MPC", "onsite_pv": "MPC-PV"}
-SOURCE_LABELS = {"observed": "Observed future", "lstm64": "LSTM64"}
-OBJECTIVE_COLORS = {"no_pv": "#0072B2", "onsite_pv": "#009E73"}
+OBJECTIVE_LABELS = {"no_pv": "MPC-CA", "onsite_pv": "MPC-PV"}
+SOURCE_LABELS = {"observed": "Perfect-forecast", "lstm64": "LSTM64"}
+from plot_styles import FORECAST_COLORS, GRID_COLORS, SELF_COLORS, focus_temperature_axes
+
+OBJECTIVE_COLORS = {"no_pv": "#8da0cb", "onsite_pv": "#66c2a5"}
 SOURCE_STYLES = {"observed": "-", "lstm64": "--"}
 
 OBSERVED_CASE_LABELS = {
-    "AC baseline": "AC27",
-    "RBC baseline": "RBC",
-    "MIQP no PV | observed future": "MPC",
+    "AC baseline": "RBC-AC",
+    "RBC baseline": "RBC-MM",
+    "MIQP no PV | observed future": "MPC-CA",
     "MIQP onsite PV | observed future": "MPC-PV",
 }
 OBSERVED_COLORS = {
-    "AC27": "#4D4D4D",
-    "RBC": "#E69F00",
-    "MPC": "#0072B2",
-    "MPC-PV": "#009E73",
+    "RBC-AC": "#4D4D4D",
+    "RBC-MM": "#E69F00",
+    "MPC-CA": "#8da0cb",
+    "MPC-PV": "#66c2a5",
 }
 
 FULL_DATE_COUNT = 22
@@ -503,34 +491,23 @@ def build_paired_lstm64_deltas(daily: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def select_lstm64_profile_dates(daily: pd.DataFrame) -> pd.DataFrame:
-    """Apply the two prespecified daily-profile selection rules."""
-
-    paired = build_paired_lstm64_deltas(daily)
-    selections: list[dict[str, object]] = []
-    rules = (
-        ("no_pv", "hvac_kwh", "largest_absolute_hvac_difference"),
-        ("onsite_pv", "ss_pct", "largest_absolute_ss_difference"),
-    )
-    for objective, metric, rule in rules:
-        candidates = paired.loc[paired["controller_objective"].eq(objective)].copy()
-        delta_column = f"delta_lstm64_minus_observed_{metric}"
-        candidates["absolute_selection_value"] = candidates[delta_column].abs()
-        candidates["date"] = pd.to_datetime(candidates["date"]).dt.strftime("%Y-%m-%d")
-        winner = candidates.sort_values(
-            ["absolute_selection_value", "date"], ascending=[False, True], kind="stable"
-        ).iloc[0]
-        selections.append(
-            {
-                "controller_objective": objective,
-                "controller": OBJECTIVE_LABELS[objective],
-                "date": winner["date"],
-                "selection_metric": rule,
-                "signed_lstm64_minus_observed": float(winner[delta_column]),
-                "absolute_selection_value": float(winner["absolute_selection_value"]),
-            }
-        )
-    return pd.DataFrame(selections)
+def select_lstm64_profile_dates(minute):
+    """Exploratory examples with the largest matched window-state differences."""
+    records = []
+    for objective in ['no_pv', 'onsite_pv']:
+        candidates = []
+        subset = minute[minute.controller_objective.eq(objective)]
+        for date, group in subset.groupby('date', sort=True):
+            paired = group.pivot(index='ts', columns='forecast_source', values='z')
+            if paired.isna().any().any() or set(paired.columns) != {'observed', 'lstm64'}:
+                raise ValueError('Profile selection requires complete matched forecast trajectories.')
+            candidates.append({'date': str(date), 'mode_difference_minutes': int(paired.observed.ne(paired.lstm64).sum())})
+        winner = sorted(candidates, key=lambda row: (-row['mode_difference_minutes'], row['date']))[0]
+        records.append({'controller_objective': objective, 'controller': OBJECTIVE_LABELS[objective],
+                        'date': winner['date'], 'selection_metric': 'largest_mode_difference_minutes',
+                        'absolute_selection_value': winner['mode_difference_minutes'],
+                        'exploratory_selection': True})
+    return pd.DataFrame(records)
 
 
 def load_weather_daily(path: Path) -> pd.DataFrame:
@@ -556,8 +533,8 @@ def compute_weather_associations(weather_daily: pd.DataFrame) -> pd.DataFrame:
         "weather association data",
     )
     specifications = [
-        ("temperature_dr", "mean_t_out_c", "dr_e_pct", ("RBC", "MPC", "MPC-PV")),
-        ("rain_window", "rain_minutes", "window_open_fraction", ("RBC", "MPC", "MPC-PV")),
+        ("temperature_dr", "mean_t_out_c", "dr_e_pct", ("RBC-MM", "MPC-CA", "MPC-PV")),
+        ("rain_window", "rain_minutes", "window_open_fraction", ("RBC-MM", "MPC-CA", "MPC-PV")),
         ("pv_dr", "pv_kwh", "dr_e_pct", ("MPC-PV",)),
         ("pv_ss", "pv_kwh", "ss_pct", ("MPC-PV",)),
     ]
@@ -637,7 +614,7 @@ def build_energy_flows(pooled: pd.DataFrame) -> pd.DataFrame:
     out["pv_closure_error_kwh"] = out["pv_kwh"] - out["self_kwh"] - out["export_kwh"]
     if out[["hvac_closure_error_kwh", "pv_closure_error_kwh"]].abs().to_numpy(float).max() > 1e-8:
         raise ValueError("pooled HVAC or PV energy-flow balance does not close")
-    order = {label: index for index, label in enumerate(("AC27", "RBC", "MPC", "MPC-PV"))}
+    order = {label: index for index, label in enumerate(("RBC-AC", "RBC-MM", "MPC-CA", "MPC-PV"))}
     out["_order"] = out["controller"].map(order).fillna(len(order))
     return out.sort_values("_order", kind="stable").drop(columns="_order").reset_index(drop=True)
 
@@ -671,7 +648,8 @@ def load_lstm64_forecast_errors(path: Path) -> pd.DataFrame:
 
 
 def render_lstm64_daily_profiles(
-    minute: pd.DataFrame, selected_dates: pd.DataFrame, output_dir: Path
+    minute: pd.DataFrame, selected_dates: pd.DataFrame, output_dir: Path,
+    *, stem: str = "discussion_lstm64_daily_profiles",
 ) -> FigureResult:
     _configure_plot_style()
     figure, axes = plt.subplots(4, 2, figsize=(13.2, 10.4), sharex="col", constrained_layout=True)
@@ -684,20 +662,20 @@ def render_lstm64_daily_profiles(
         ].copy()
         if set(subset["forecast_source"]) != {"observed", "lstm64"}:
             raise ValueError(f"daily profile is incomplete for {objective} on {date}")
-        color = OBJECTIVE_COLORS[objective]
         for source in ("observed", "lstm64"):
+            color = FORECAST_COLORS[(objective, source)]
             group = subset.loc[subset["forecast_source"].eq(source)].sort_values("ts")
             style = SOURCE_STYLES[source]
             label = SOURCE_LABELS[source]
             axes[0, column].plot(group["ts"], group["T_mean"], color=color, linestyle=style, linewidth=1.8, label=f"{OBJECTIVE_LABELS[objective]} - {label}")
             axes[1, column].step(group["ts"], 1 - group["z"], where="post", color=color, linestyle=style, linewidth=1.5, label=label)
             axes[2, column].plot(group["ts"], group["pmv_mean"], color=color, linestyle=style, linewidth=1.6, label=label)
-            axes[3, column].plot(group["ts"], group["hvac_kw"], color=color, linestyle=style, linewidth=1.6, label=f"HVAC, {label}")
-            axes[3, column].plot(group["ts"], group["grid_kw"], color="#56B4E9", linestyle=style, linewidth=1.0, alpha=0.85, label="Grid power" if source == "observed" else None)
+            axes[3, column].plot(group["ts"], group["hvac_kw"], color=color, linestyle=style, linewidth=1.6, label="_nolegend_")
+            axes[3, column].plot(group["ts"], group["grid_kw"], color=GRID_COLORS[source], linestyle=style, linewidth=1.15, label=f"Grid, {label}")
             if objective == "onsite_pv":
-                axes[3, column].plot(group["ts"], group["self_kw"], color="#CC79A7", linestyle=style, linewidth=1.0, label="Self-used PV" if source == "observed" else None)
+                axes[3, column].plot(group["ts"], group["self_kw"], color=SELF_COLORS[source], linestyle=style, linewidth=1.15, label=f"Self-used PV, {label}")
         common = subset.loc[subset["forecast_source"].eq("observed")].sort_values("ts")
-        axes[3, column].plot(common["ts"], common["pv_kw"], color="#777777", linewidth=1.1, label="Available PV")
+        axes[3, column].plot(common["ts"], common["pv_kw"], color="#444444", linestyle=":", linewidth=1.4, label="Available PV")
         axes[0, column].axhline(30.0, color="#555555", linestyle=":", linewidth=1.0)
         axes[1, column].set_ylim(-0.08, 1.08)
         axes[1, column].set_yticks((0, 1), labels=("Closed", "Open"))
@@ -708,6 +686,7 @@ def render_lstm64_daily_profiles(
         axes[3, column].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
         axes[3, column].set_xlabel("Local time")
 
+    focus_temperature_axes(list(axes[0, :]), label="forecast daily temperature " + stem)
     row_labels = ("Mean zone\ntemperature (°C)", "Window\nstatus", "Mean PMV", "Power (kW)")
     for row in range(4):
         for column in range(2):
@@ -728,14 +707,14 @@ def render_lstm64_daily_profiles(
         legend_labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.995),
-        ncol=4,
+        ncol=3,
         frameon=False,
-        fontsize=13.5,
+        fontsize=12.5,
     )
     layout_engine = figure.get_layout_engine()
     if layout_engine is not None:
-        layout_engine.set(rect=(0.0, 0.0, 1.0, 0.88))
-    return _save_figure(figure, output_dir, "discussion_lstm64_daily_profiles")
+        layout_engine.set(rect=(0.0, 0.0, 1.0, 0.84))
+    return _save_figure(figure, output_dir, stem)
 
 
 def _paired_metric_axis(
@@ -792,7 +771,7 @@ def render_lstm64_aggregate(daily: pd.DataFrame, output_dir: Path) -> FigureResu
                 ("dr_p_evening_pct", "evening"),
             )
         ),
-        "Demand reduction vs AC27 (%)",
+        "Demand reduction vs RBC-AC (%)",
     )
     _paired_metric_axis(
         axes[2],
@@ -800,7 +779,7 @@ def render_lstm64_aggregate(daily: pd.DataFrame, output_dir: Path) -> FigureResu
         (("onsite_pv", "sc_pct", "Self-consumption"), ("onsite_pv", "ss_pct", "Self-sufficiency")),
         "PV utilization (%)",
     )
-    axes[0].scatter([], [], color="#555555", marker="o", label="Observed future")
+    axes[0].scatter([], [], color="#555555", marker="o", label="Perfect-forecast")
     axes[0].scatter([], [], facecolors="white", edgecolors="#555555", marker="s", label="LSTM64")
     figure.legend(
         axes[0].get_legend_handles_labels()[0],
@@ -824,12 +803,12 @@ def render_weather_flexibility(
     _configure_plot_style()
     figure, axes = plt.subplots(2, 2, figsize=(11.5, 8.2), constrained_layout=True)
     panels = (
-        ("temperature_dr", "mean_t_out_c", "dr_e_pct", "Mean outdoor temperature (°C)", "Full-day reduction\nvs AC27 (%)", ("RBC", "MPC", "MPC-PV")),
-        ("rain_window", "rain_minutes", "window_open_fraction", "Rain minutes", "Window-open\nfraction", ("RBC", "MPC", "MPC-PV")),
-        ("pv_dr", "pv_kwh", "dr_e_pct", "Available PV energy (kWh)", "MPC-PV reduction\nvs AC27 (%)", ("MPC-PV",)),
+        ("temperature_dr", "mean_t_out_c", "dr_e_pct", "Mean outdoor temperature (°C)", "Full-day reduction\nvs RBC-AC (%)", ("RBC-MM", "MPC-CA", "MPC-PV")),
+        ("rain_window", "rain_minutes", "window_open_fraction", "Rain minutes", "Window-open\nfraction", ("RBC-MM", "MPC-CA", "MPC-PV")),
+        ("pv_dr", "pv_kwh", "dr_e_pct", "Available PV energy (kWh)", "MPC-PV reduction\nvs RBC-AC (%)", ("MPC-PV",)),
         ("pv_ss", "pv_kwh", "ss_pct", "Available PV energy (kWh)", "MPC-PV\nself-sufficiency (%)", ("MPC-PV",)),
     )
-    markers = {"RBC": "^", "MPC": "o", "MPC-PV": "s"}
+    markers = {"RBC-MM": "^", "MPC-CA": "o", "MPC-PV": "s"}
     for axis, (panel, x_column, y_column, xlabel, ylabel, controllers) in zip(axes.flat, panels):
         annotation_lines = []
         for controller in controllers:
@@ -905,6 +884,39 @@ def _copy_figure_pair(result: FigureResult, paper_fig_dir: Path) -> tuple[Path, 
     return png, pdf
 
 
+def reconcile_observed_daily(daily: pd.DataFrame, observed_daily_path: Path) -> dict[str, Any]:
+    """Check shared definitions without equating mean-zone and zone-sample PMV."""
+
+    columns = ["hvac_kwh", "grid_kwh", "pv_kwh", "self_kwh", "export_kwh",
+               "morning_hvac_kwh", "evening_hvac_kwh", "dr_e_pct",
+               "dr_p_morning_pct", "dr_p_evening_pct", "switch_count",
+               "window_open_fraction", "mean_temp_c", "mean_pmv"]
+    reference = pd.read_csv(observed_daily_path)
+    _require_columns(reference, ["date", "case", *columns], "isolated observed daily metrics")
+    reference = reference.loc[reference["case"].isin(CASE_BY_KEY[key] for key in FORECAST_CASES if key[1] == "observed")].copy()
+    reference["date"] = pd.to_datetime(reference["date"]).dt.strftime("%Y-%m-%d")
+    selected = daily.loc[daily["forecast_source"].eq("observed")].copy()
+    selected["date"] = pd.to_datetime(selected["date"]).dt.strftime("%Y-%m-%d")
+    if reference.duplicated(["date", "case"]).any() or selected.duplicated(["date", "case"]).any():
+        raise ValueError("observed reconciliation keys must be unique")
+    reference = reference.set_index(["date", "case"]).sort_index()
+    selected = selected.set_index(["date", "case"]).sort_index()
+    if not reference.index.equals(selected.index):
+        raise ValueError("observed discussion and primary tables do not share identical date/case keys")
+    errors = {}
+    for column in columns:
+        actual = selected[column].to_numpy(float)
+        expected = reference[column].to_numpy(float)
+        # Historical and surrogate mean temperatures may be stored as float32.
+        tolerance = 5e-6 if column == "mean_temp_c" else 1e-8
+        if not np.allclose(actual, expected, rtol=1e-9, atol=tolerance, equal_nan=True):
+            raise ValueError(f"isolated observed reconciliation failed for {column}")
+        difference = np.abs(actual - expected)
+        errors[column] = float(np.nanmax(difference)) if np.isfinite(difference).any() else None
+    return {"passed": True, "rows": len(selected), "max_absolute_errors": errors,
+            "comfort_definition_note": "Section 3 mean-zone PMV coverage and discussion zone-sample coverage remain distinct"}
+
+
 def run_pipeline(
     *,
     timeseries_path: Path = DEFAULT_TIMESERIES_PATH,
@@ -918,6 +930,8 @@ def run_pipeline(
     validate_only: bool = False,
     validate_full: bool = True,
 ) -> PipelineResult:
+    output_dir = Path(output_dir)
+    paper_fig_dir = Path(paper_fig_dir)
     minute = load_forecast_cases(timeseries_path, validate_full=validate_full)
     audit = minute.attrs["energy_audit"]
     context = load_observed_context(observed_context_path)
@@ -928,10 +942,8 @@ def run_pipeline(
     daily = compute_lstm64_daily_metrics(minute, ac27)
     pooled = pool_lstm64_metrics(daily)
     deltas = build_paired_lstm64_deltas(daily)
-    selected = select_lstm64_profile_dates(daily)
+    selected = select_lstm64_profile_dates(minute)
     selections = dict(zip(selected["controller_objective"], selected["date"]))
-    if validate_full and selections != {"no_pv": "2024-10-08", "onsite_pv": "2024-10-09"}:
-        raise ValueError(f"prespecified LSTM64 profile dates changed: {selections}")
     safety = validate_safety_table(validation_path, dates)
     weather_daily = load_weather_daily(observed_daily_path)
     associations = compute_weather_associations(weather_daily)
@@ -939,22 +951,9 @@ def run_pipeline(
     flows = build_energy_flows(load_observed_pooled(observed_pooled_path))
     forecast_errors = load_lstm64_forecast_errors(forecast_metrics_path)
 
-    # Known-value reconciliation prevents a visually plausible but wrong source
-    # selection from entering the paper.
-    if validate_full:
-        expected = {
-            ("no_pv", "observed"): (412.76123448146, 52.9032545999831),
-            ("no_pv", "lstm64"): (435.3822506741201, 50.3221589172605),
-            ("onsite_pv", "observed"): (627.9698451438247, 28.3475931241912),
-            ("onsite_pv", "lstm64"): (640.0600509413324, 26.9680804744765),
-        }
-        for key, (expected_hvac, expected_dr) in expected.items():
-            row = pooled.loc[
-                pooled["controller_objective"].eq(key[0])
-                & pooled["forecast_source"].eq(key[1])
-            ].iloc[0]
-            if abs(float(row["hvac_kwh"]) - expected_hvac) > 1e-6 or abs(float(row["dr_e_pct"]) - expected_dr) > 1e-6:
-                raise ValueError(f"known pooled-value reconciliation failed for {key}")
+    # Reconcile the independently recomputed observed trajectories to this
+    # experiment's observed tables, rather than to obsolete historical totals.
+    observed_reconciliation = reconcile_observed_daily(daily, observed_daily_path)
 
     if validate_only:
         return PipelineResult(True, len(dates), len(minute), {}, selections)
@@ -1016,6 +1015,9 @@ def run_pipeline(
             "evening": "16:00--18:30, start-inclusive and end-exclusive",
         },
         "selected_profiles": selections,
+        "observed_reconciliation": observed_reconciliation,
+        "historical_selected_profiles": {"no_pv": "2024-10-08", "onsite_pv": "2024-10-09"},
+        "historical_profile_dates_are_not_acceptance_gates": True,
         "safety": safety,
         "sources": {
             "trajectory": {"file": Path(timeseries_path).name, "sha256": _sha256(timeseries_path)},

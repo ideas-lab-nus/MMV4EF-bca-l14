@@ -1,3 +1,5 @@
+> The numbered entries below are stable release asset groups. Manuscript figure numbering can change as assets are combined or moved to appendices; use the output filenames to match the final manuscript. The PV energy-flow plot is retained as a supplementary diagnostic.
+
 # Figure reproduction
 
 This repository contains the minimum code and released model artifacts needed to reconstruct the manuscript workflow. It deliberately contains no observational data, no simulation result tables, and no credentials. Consequently, `python scripts/reproduce_figures.py --list` works in a clean clone, while numerical figures become runnable only after the private and derived inputs in [DATA_REQUIREMENTS.md](DATA_REQUIREMENTS.md) have been supplied.

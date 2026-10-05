@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import time
 from pathlib import Path
+
 from typing import Any
 
 import numpy as np
@@ -80,11 +81,13 @@ MPC_CASES = (
     "MIQP no PV | observed future",
     "MIQP onsite PV | observed future",
 )
+from plot_styles import focus_temperature_axes
+
 CASE_COLORS = {
-    "AC baseline": "#4D4D4D",
-    "RBC baseline": "#E69F00",
-    "MIQP no PV | observed future": "#0072B2",
-    "MIQP onsite PV | observed future": "#009E73",
+    "AC baseline": "#fc8d62",
+    "RBC baseline": "#e78ac3",
+    "MIQP no PV | observed future": "#8da0cb",
+    "MIQP onsite PV | observed future": "#66c2a5",
 }
 CASE_LINESTYLES = {
     "AC baseline": "-",
@@ -93,9 +96,9 @@ CASE_LINESTYLES = {
     "MIQP onsite PV | observed future": ":",
 }
 CASE_DISPLAY_LABELS = {
-    "AC baseline": "AC27",
-    "RBC baseline": "RBC",
-    "MIQP no PV | observed future": "MPC",
+    "AC baseline": "RBC-AC",
+    "RBC baseline": "RBC-MM",
+    "MIQP no PV | observed future": "MPC-CA",
     "MIQP onsite PV | observed future": "MPC-PV",
 }
 WINDOW_PLOT_OFFSETS = {
@@ -1053,11 +1056,11 @@ def _padded_limits(
 
 
 def compute_global_plot_limits(frame: pd.DataFrame) -> GlobalPlotLimits:
-    """Compute one honest set of limits to reuse on every daily figure."""
+    """Compute pooled fallback limits; daily temperature panels use focused per-day ranges."""
 
     source = _prepare_plot_frame(frame, require_single_date=False)
     temperature = _padded_limits(
-        source.loc[:, ["T_mean", "T_out"]].to_numpy(dtype=float),
+        source.loc[:, ["T_mean"]].to_numpy(dtype=float),
         anchors=(30.0,),
         minimum_padding=0.25,
     )
@@ -1186,13 +1189,14 @@ def render_daily_figure(
     outdoor_reference = source.loc[
         source["case"].eq(APPROVED_CASES[0])
     ].sort_values("ts", kind="stable")
-    axes[0].plot(
+    outdoor_axis = axes[0].twinx()
+    outdoor_axis.plot(
         outdoor_reference["ts"],
         outdoor_reference["T_out"],
-        color="#8C2D04",
+        color="#555555",
         linestyle=(0, (4, 2)),
         linewidth=1.45,
-        label="Outdoor temperature",
+        label="Outdoor temperature (right axis)",
     )
     axes[0].axhline(
         30.0,
@@ -1201,8 +1205,13 @@ def render_daily_figure(
         linewidth=1.0,
         label="30 °C reference",
     )
-    axes[0].set_ylabel("Temperature (°C)")
-    axes[0].set_ylim(*plot_limits.temperature_c)
+    axes[0].plot([], [], color="#555555", linestyle=(0, (4, 2)),
+                 linewidth=1.45, label="Outdoor temperature (right axis)")
+    axes[0].set_ylabel("Mean indoor\ntemperature (°C)")
+    outdoor_axis.set_ylabel("Outdoor\ntemperature (°C)", color="#555555")
+    outdoor_axis.tick_params(axis="y", colors="#555555")
+    focus_temperature_axes([axes[0]], label="observed indoor " + date_iso)
+    focus_temperature_axes([outdoor_axis], label="observed outdoor " + date_iso)
 
     for case, offset in WINDOW_PLOT_OFFSETS.items():
         group = source.loc[source["case"].eq(case)].sort_values("ts", kind="stable")
@@ -1315,7 +1324,7 @@ def render_daily_figure(
         legend_labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.958),
-        ncol=4,
+        ncol=3,
         frameon=False,
         fontsize=14.0,
         handlelength=3.0,
@@ -1625,7 +1634,7 @@ def render_aggregate_kpi_figure(
                 "dr_p_morning_pct",
                 case,
                 f"AM\n{CASE_DISPLAY_LABELS[case]}",
-                index + 1.0,
+                1.15 * index + 1.0,
                 "o",
                 True,
             )
@@ -1636,7 +1645,7 @@ def render_aggregate_kpi_figure(
                 "dr_p_evening_pct",
                 case,
                 f"PM\n{CASE_DISPLAY_LABELS[case]}",
-                index + 5.0,
+                1.15 * index + 4.7,
                 "s",
                 True,
             )
@@ -1683,7 +1692,7 @@ def render_aggregate_kpi_figure(
         axis.spines["right"].set_visible(False)
         axis.tick_params(axis="x", labelsize=12.5)
 
-    dr_reference_label = "AC27 reference (0%)"
+    dr_reference_label = "RBC-AC reference (0%)"
     for axis in axes[:2]:
         axis.axhline(
             0.0,
@@ -2175,6 +2184,7 @@ def build_manifest(
 def _copy_artifact_atomically(source: Path, destination: Path) -> None:
     """Replace a watched paper artifact without truncating it in place."""
 
+    destination = Path(destination)
     temporary = destination.with_name(f".{destination.name}.tmp")
     try:
         shutil.copyfile(source, temporary)
@@ -2197,6 +2207,8 @@ def run_pipeline(
 ) -> PipelineResult:
     """Validate inputs and optionally generate the complete observed-future bundle."""
 
+    output_dir = Path(output_dir)
+    paper_fig_dir = Path(paper_fig_dir)
     selected = load_observed_cases(Path(timeseries_path), validate_full=validate_full)
     audit = selected.attrs.get("energy_audit")
     if not isinstance(audit, EnergyAudit):

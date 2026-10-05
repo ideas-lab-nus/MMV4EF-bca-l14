@@ -136,3 +136,20 @@ The underlying PV training/holdout records are not released. The coefficient row
 - Configure a solver through its normal per-user or environment mechanism before executing controller notebooks.
 - Keep raw exports and all generated trajectory/result tables outside version control.
 - Before sharing any derived table, review whether its minute-resolution timestamps or operational signals can disclose site behavior.
+
+
+## Final controller and training interfaces
+
+`python scripts/run_study.py --data path/to/authorized.csv --check` validates the input schema, all checkpoints and complete occupied-day windows without starting Gurobi. Observations must include 07:30 through 19:00 inclusive; simulations record 07:30 through 18:59. The published comparison date lists are in `mmv4ef/config.py`. Both AC/NV input fields must be present, even if the observed day used only one mode. Extra fields are allowed. No network data acquisition or institutional login is part of this workflow.
+
+The thermal loader fills at most five missing solar samples using earlier values in the same continuous calendar day. It never interpolates from later samples. Unfilled/nonfinite required inputs make a segment ineligible. Duplicate timestamps, nonbinary mode/rain values and missing required fields raise clear errors.
+
+Thermal training retains the original first 75 complete AC segments and first 79 complete NV segments. All retained training segments must precede 1 October 2024. Recursive validation uses 1-9 October, and the diagnostic test partition starts 10 October; the study excludes dates on or after 31 October. Scalers are fitted only on retained training rows. Candidate seeds 17, 29 and 43 and epochs are selected using the combined recursive 60-minute/full-segment validation RMSE. Test values do not enter scaling or checkpoint selection.
+
+For another dataset, `scripts/train_thermal.py --chronological --validation-start YYYY-MM-DD --test-start YYYY-MM-DD --study-end YYYY-MM-DD` uses all eligible pre-validation segments with the same partition isolation. Each mode needs training segments and at least one validation segment longer than 60 minutes. Supplying another building's formatted data does not establish that the supplied study checkpoints generalize to it.
+
+The 22 controller-comparison dates are distinct from the thermal-model training/validation/test partitions. Some comparison dates precede the thermal test period. They are paired controller experiments, not a claim that every comparison date is held out from thermal training.
+
+In the perfect-forecast case, horizon weather is observed future weather by design. In the LSTM64 case, 07:30-08:25 uses the documented observed-future startup segment; forecasts from 08:30 use only preceding weather history. The recorded DOAS supply-temperature horizon inputs are retained in both experiments. End-of-day horizon completion repeats the available boundary values. Rain safety samples current observations at five-minute controller updates; a short rain event between updates can be missed. The forecast audit records the source and boundary completion of every horizon row.
+
+Notebook equivalents accept `MMV4EF_DATA`, `MMV4EF_LSTM64_FUTURE`, `MMV4EF_MAX_SEGMENTS`, `MMV4EF_WINDOW` and `MMV4EF_OUTPUT_DIR`. CLI output paths must be under ignored `outputs/`. A successful smoke run validates mechanics; final figure reporters require the complete full-period dataset and matching baseline runs.

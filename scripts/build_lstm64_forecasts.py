@@ -92,6 +92,8 @@ def main() -> int:
         raise FileNotFoundError(
             f"Private input is missing: {args.data}. See docs/DATA_REQUIREMENTS.md."
         )
+    from mmv4ef.output import require_ignored_output
+    require_ignored_output(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     cfg = ForecastConfig()
     local = load_local_weather(args.data)

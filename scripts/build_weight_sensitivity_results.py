@@ -1,7 +1,7 @@
 """Build the gated three-point MPC temperature-slack sensitivity evidence.
 
 Only ``w_x_slack`` varies.  The accepted run must be CPU-only and its
-``w_x_slack=100`` energy totals must reproduce the paper baselines within
+``w_x_slack=100`` energy totals must reproduce this experiment's observed-future baselines within
 0.05 kWh.  All energy, peak-window, comfort, and PV metrics are recalculated
 from the minute trajectories instead of trusting notebook summary columns.
 """
@@ -13,6 +13,7 @@ import json
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
 from typing import Any, Sequence
 
 import matplotlib
@@ -24,54 +25,33 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 
-try:
-    from scripts.build_discussion_results import (
-        FigureResult,
-        _configure_plot_style,
-        _save_figure,
-        _sha256,
-        _safe_pct,
-    )
-    from scripts.build_observed_future_results import (
-        FCU_COLUMNS,
-        PFCU_COLUMNS,
-        POWER_ACCOUNTING_ATOL_KW,
-        STEP_HOURS,
-        ZONE_COLUMNS,
-        attach_observed_context,
-        attach_pmv,
-        audit_hvac_power,
-        load_observed_context,
-        recompute_hvac_power_kw,
-    )
-except ModuleNotFoundError:  # Direct ``python scripts/...py`` execution.
-    from build_discussion_results import (  # type: ignore[no-redef]
-        FigureResult,
-        _configure_plot_style,
-        _save_figure,
-        _sha256,
-        _safe_pct,
-    )
-    from build_observed_future_results import (  # type: ignore[no-redef]
-        FCU_COLUMNS,
-        PFCU_COLUMNS,
-        POWER_ACCOUNTING_ATOL_KW,
-        STEP_HOURS,
-        ZONE_COLUMNS,
-        attach_observed_context,
-        attach_pmv,
-        audit_hvac_power,
-        load_observed_context,
-        recompute_hvac_power_kw,
-    )
-
+from build_discussion_results import (
+    FigureResult,
+    _configure_plot_style,
+    _save_figure,
+    _sha256,
+    _safe_pct,
+)
+from build_observed_future_results import (
+    FCU_COLUMNS,
+    PFCU_COLUMNS,
+    POWER_ACCOUNTING_ATOL_KW,
+    STEP_HOURS,
+    ZONE_COLUMNS,
+    attach_observed_context,
+    attach_pmv,
+    audit_hvac_power,
+    load_observed_context,
+    recompute_hvac_power_kw,
+)
 
 SWEEP_WEIGHTS = (100.0, 1000.0, 10000.0)
 OBJECTIVES = ("no_pv", "onsite_pv")
-OBJECTIVE_LABELS = {"no_pv": "MPC", "onsite_pv": "MPC-PV"}
-OBJECTIVE_COLORS = {"no_pv": "#0072B2", "onsite_pv": "#009E73"}
-WEIGHT_COLORS = {100.0: "#9ECAE1", 1000.0: "#4292C6", 10000.0: "#08519C"}
-BASELINE_EXPECTED_KWH = {"no_pv": 412.761, "onsite_pv": 627.970}
+OBJECTIVE_LABELS = {"no_pv": "MPC-CA", "onsite_pv": "MPC-PV"}
+from plot_styles import WEIGHT_STYLES, WEIGHT_OFFSETS, focus_temperature_axes
+
+OBJECTIVE_COLORS = {"no_pv": "#8da0cb", "onsite_pv": "#66c2a5"}
+WEIGHT_COLORS = {100.0: "#66c2a5", 1000.0: "#fc8d62", 10000.0: "#8da0cb"}
 BASELINE_TOLERANCE_KWH = 0.05
 
 FULL_DATE_COUNT = 22
@@ -91,6 +71,7 @@ REQUIRED_FILES = (
 DEFAULT_SWEEP_DIR = Path("outputs/simulations/weight_sweep")
 DEFAULT_OUTPUT_DIR = Path("outputs/analysis/discussion_results")
 DEFAULT_PAPER_FIG_DIR = Path("figures")
+DEFAULT_OBSERVED_POOLED_PATH = Path(__file__).resolve().parents[1] / "outputs/analysis/observed_future_results/observed_future_pooled_metrics.csv"
 
 
 @dataclass
@@ -103,6 +84,7 @@ class SweepInputs:
     safety: dict[str, Any]
     source_paths: dict[str, Path]
     observed_context_path: Path
+    observed_pooled_path: Path
 
 
 @dataclass(frozen=True)
@@ -139,12 +121,22 @@ def validate_runtime_metadata(metadata: dict[str, Any]) -> None:
 
 
 def validate_baseline_gate(
-    pooled: pd.DataFrame, tolerance_kwh: float = BASELINE_TOLERANCE_KWH
+    pooled: pd.DataFrame, tolerance_kwh: float = BASELINE_TOLERANCE_KWH,
+    *, observed_pooled_path: Path = DEFAULT_OBSERVED_POOLED_PATH,
 ) -> dict[str, Any]:
     _require_columns(pooled, ["controller_objective", "w_x_slack", "hvac_kwh"], "baseline-gate table")
-    records: dict[str, Any] = {}
+    reference = pd.read_csv(observed_pooled_path)
+    _require_columns(reference, ["case", "hvac_kwh"], "isolated observed pooled reference")
+    expected_by_objective = {}
+    for objective in OBJECTIVES:
+        case = f"MIQP {'no PV' if objective == 'no_pv' else 'onsite PV'} | observed future"
+        selected_reference = reference.loc[reference["case"].eq(case)]
+        if len(selected_reference) != 1:
+            raise ValueError(f"isolated reference requires exactly one row for {case}")
+        expected_by_objective[objective] = float(selected_reference.iloc[0]["hvac_kwh"])
+    records: dict[str, Any] = {"reference": str(Path(observed_pooled_path).resolve())}
     all_passed = True
-    for objective, expected in BASELINE_EXPECTED_KWH.items():
+    for objective, expected in expected_by_objective.items():
         selected = pooled.loc[
             pooled["controller_objective"].eq(objective)
             & pd.to_numeric(pooled["w_x_slack"], errors="coerce").eq(100.0)
@@ -164,7 +156,7 @@ def validate_baseline_gate(
         }
     records["passed"] = all_passed
     if not all_passed:
-        raise ValueError(f"paper baseline gate failed: {records}")
+        raise ValueError(f"isolated observed baseline gate failed: {records}")
     return records
 
 
@@ -316,6 +308,7 @@ def validate_sweep_run(
     sweep_dir: Path,
     *,
     observed_context_path: Path | None = None,
+    observed_pooled_path: Path = DEFAULT_OBSERVED_POOLED_PATH,
     validate_full: bool = True,
 ) -> SweepInputs:
     root = Path(sweep_dir)
@@ -336,7 +329,7 @@ def validate_sweep_run(
         raise ValueError("sweep contains error rows")
 
     minute, audit = _prepare_minute_table(paths["wx_sweep_timeseries.csv.gz"], validate_full=validate_full)
-    gate = validate_baseline_gate(_quick_mpc_pooled(minute))
+    gate = validate_baseline_gate(_quick_mpc_pooled(minute), observed_pooled_path=observed_pooled_path)
     context_path = _resolve_observed_context(metadata, observed_context_path)
     context = load_observed_context(context_path)
     minute = attach_pmv(attach_observed_context(minute, context))
@@ -351,14 +344,14 @@ def validate_sweep_run(
         "pfcu_mode_safety_passed": bool(safety_checks["check"].eq("pfcu_disabled_in_ac_mode").any()),
         "all_checks_passed": True,
     }
-    return SweepInputs(root, minute, metadata, audit, gate, safety, paths, context_path)
+    return SweepInputs(root, minute, metadata, audit, gate, safety, paths, context_path, Path(observed_pooled_path))
 
 
 def _controller_label(objective: str) -> str:
     return {
-        "baseline_ac": "AC27",
-        "baseline_rbc": "RBC",
-        "no_pv": "MPC",
+        "baseline_ac": "RBC-AC",
+        "baseline_rbc": "RBC-MM",
+        "no_pv": "MPC-CA",
         "onsite_pv": "MPC-PV",
     }.get(objective, objective)
 
@@ -432,7 +425,7 @@ def compute_weight_metrics(inputs: SweepInputs) -> tuple[pd.DataFrame, pd.DataFr
         daily.at[index, "dr_p_evening_pct"] = _safe_pct(reference["evening_hvac_kwh"] - daily.at[index, "evening_hvac_kwh"], reference["evening_hvac_kwh"])
 
     pooled = pool_weight_metrics(daily)
-    inputs.baseline_gate = validate_baseline_gate(pooled)
+    inputs.baseline_gate = validate_baseline_gate(pooled, observed_pooled_path=inputs.observed_pooled_path)
     return (
         daily.sort_values(["date", "controller_objective", "w_x_slack"], kind="stable").reset_index(drop=True),
         pooled,
@@ -489,7 +482,7 @@ def select_weight_profile_dates(daily: pd.DataFrame) -> pd.DataFrame:
     records.append(
         {
             "controller_objective": "no_pv",
-            "controller": "MPC",
+            "controller": "MPC-CA",
             "date": no_pv_winner["date"],
             "selection_metric": "largest_degree_minute_reduction",
             "burden_reduction_degree_minutes": float(no_pv_winner["burden_reduction"]),
@@ -517,7 +510,8 @@ def select_weight_profile_dates(daily: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_weight_daily_profiles(
-    minute: pd.DataFrame, selected_dates: pd.DataFrame, output_dir: Path
+    minute: pd.DataFrame, selected_dates: pd.DataFrame, output_dir: Path,
+    *, stem: str = "discussion_weight_daily_profiles",
 ) -> FigureResult:
     _configure_plot_style()
     figure, axes = plt.subplots(4, 2, figsize=(13.2, 10.4), sharex="col", constrained_layout=True)
@@ -531,17 +525,16 @@ def render_weight_daily_profiles(
         for weight in SWEEP_WEIGHTS:
             group = subset.loc[pd.to_numeric(subset["w_x_slack"], errors="coerce").eq(weight)].sort_values("ts")
             color = WEIGHT_COLORS[weight]
+            style = WEIGHT_STYLES[weight]
             label = f"$w_x^{{slack}}={int(weight):,}$"
-            axes[0, column].plot(group["ts"], group["T_mean"], color=color, linewidth=1.5, label=label)
-            axes[1, column].plot(group["ts"], group["pmv_mean"], color=color, linewidth=1.5, label=label)
-            axes[2, column].step(group["ts"], 1 - group["z"], where="post", color=color, linewidth=1.4, label=label)
-            axes[3, column].plot(group["ts"], group["hvac_kw"], color=color, linewidth=1.5, label=label)
-            if objective == "onsite_pv":
-                axes[3, column].plot(group["ts"], group["self_kw"], color=color, linestyle="--", linewidth=0.9, alpha=0.75)
+            axes[0, column].plot(group["ts"], group["T_mean"], color=color, linestyle=style, linewidth=1.8, label=label)
+            axes[1, column].plot(group["ts"], group["pmv_mean"], color=color, linestyle=style, linewidth=1.8, label=label)
+            axes[2, column].step(group["ts"], 1 - group["z"] + WEIGHT_OFFSETS[weight], where="post", color=color, linestyle=style, linewidth=1.7, label=label)
+            axes[3, column].plot(group["ts"], group["hvac_kw"], color=color, linestyle=style, linewidth=1.8, label=label)
         common = subset.loc[pd.to_numeric(subset["w_x_slack"], errors="coerce").eq(100.0)].sort_values("ts")
-        if objective == "onsite_pv":
-            axes[3, column].plot(common["ts"], common["pv_kw"], color="#777777", linewidth=1.0, label="Available PV")
-            axes[3, column].plot([], [], color="#555555", linestyle="--", linewidth=1.0, label="Self-used PV")
+        # Solar availability is common to both objectives, even though only
+        # onsite_pv includes the export penalty in optimization.
+        axes[3, column].plot(common["ts"], common["pv_kw"], color="#444444", linestyle=":", linewidth=1.4, label="Available PV")
         axes[0, column].axhline(30.0, color="#555555", linestyle=":", linewidth=1.0)
         axes[1, column].axhspan(-0.5, 0.5, color="#56B4E9", alpha=0.10)
         axes[1, column].axhline(-1.0, color="#777777", linestyle=":", linewidth=0.8)
@@ -551,6 +544,7 @@ def render_weight_daily_profiles(
         axes[0, column].set_title(pd.Timestamp(date).strftime("%Y-%m-%d"))
         axes[3, column].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
         axes[3, column].set_xlabel("Local time")
+    focus_temperature_axes(list(axes[0, :]), label="weight daily temperature " + stem)
     ylabels = ("Mean zone\ntemperature (°C)", "Mean PMV", "Window\nstatus", "Power (kW)")
     for row in range(4):
         for column in range(2):
@@ -569,7 +563,7 @@ def render_weight_daily_profiles(
     layout_engine = figure.get_layout_engine()
     if layout_engine is not None:
         layout_engine.set(rect=(0.0, 0.0, 1.0, 0.89))
-    return _save_figure(figure, output_dir, "discussion_weight_daily_profiles")
+    return _save_figure(figure, output_dir, stem)
 
 
 def _plot_weight_response(
@@ -603,11 +597,11 @@ def render_weight_sensitivity(daily: pd.DataFrame, output_dir: Path) -> FigureRe
     axes[1, 0].set_xscale("log")
     axes[1, 0].set_xticks(SWEEP_WEIGHTS, ["100", "1,000", "10,000"])
     axes[1, 0].set_xlabel("Zone-temperature slack weight $w_x^{slack}$")
-    axes[1, 0].set_ylabel("Demand reduction\nvs AC27 (%)")
+    axes[1, 0].set_ylabel("Demand reduction\nvs RBC-AC (%)")
     axes[1, 0].grid(True, which="major")
     pv = pooled.loc[pooled["controller_objective"].eq("onsite_pv") & pooled["w_x_slack"].notna()].sort_values("w_x_slack")
     axes[1, 1].plot(pv["w_x_slack"], pv["sc_pct"], color="#D55E00", marker="o", linewidth=1.3, label="Self-consumption")
-    axes[1, 1].plot(pv["w_x_slack"], pv["ss_pct"], color="#0072B2", marker="s", linestyle="--", linewidth=1.3, label="Self-sufficiency")
+    axes[1, 1].plot(pv["w_x_slack"], pv["ss_pct"], color="#8da0cb", marker="s", linestyle="--", linewidth=1.3, label="Self-sufficiency")
     axes[1, 1].set_xscale("log")
     axes[1, 1].set_xticks(SWEEP_WEIGHTS, ["100", "1,000", "10,000"])
     axes[1, 1].set_xlabel("Zone-temperature slack weight $w_x^{slack}$")
@@ -616,13 +610,13 @@ def render_weight_sensitivity(daily: pd.DataFrame, output_dir: Path) -> FigureRe
     for index, axis in enumerate(axes.flat):
         axis.text(0.01, 0.97, f"({chr(ord('a') + index)})", transform=axis.transAxes, ha="left", va="top", fontsize=14.0, fontweight="bold")
     legend_handles = [
-        Line2D([], [], color=OBJECTIVE_COLORS["no_pv"], marker="o", linestyle="-", label="MPC"),
+        Line2D([], [], color=OBJECTIVE_COLORS["no_pv"], marker="o", linestyle="-", label="MPC-CA"),
         Line2D([], [], color=OBJECTIVE_COLORS["onsite_pv"], marker="s", linestyle="--", label="MPC-PV"),
         Line2D([], [], color="#555555", linestyle="-", label="Full day"),
         Line2D([], [], color="#555555", linestyle="--", label="Morning"),
         Line2D([], [], color="#555555", linestyle=":", label="Evening"),
         Line2D([], [], color="#D55E00", marker="o", linestyle="-", label="Self-consumption"),
-        Line2D([], [], color="#0072B2", marker="s", linestyle="--", label="Self-sufficiency"),
+        Line2D([], [], color="#8da0cb", marker="s", linestyle="--", label="Self-sufficiency"),
     ]
     figure.legend(legend_handles, [handle.get_label() for handle in legend_handles], loc="upper center", bbox_to_anchor=(0.5, 0.995), ncol=4, frameon=False, fontsize=13.5)
     layout_engine = figure.get_layout_engine()
@@ -645,11 +639,14 @@ def run_pipeline(
     *,
     sweep_dir: Path = DEFAULT_SWEEP_DIR,
     observed_context_path: Path | None = None,
+    observed_pooled_path: Path = DEFAULT_OBSERVED_POOLED_PATH,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     paper_fig_dir: Path = DEFAULT_PAPER_FIG_DIR,
     validate_only: bool = False,
 ) -> PipelineResult:
-    inputs = validate_sweep_run(sweep_dir, observed_context_path=observed_context_path)
+    output_dir = Path(output_dir)
+    paper_fig_dir = Path(paper_fig_dir)
+    inputs = validate_sweep_run(sweep_dir, observed_context_path=observed_context_path, observed_pooled_path=observed_pooled_path)
     daily, pooled = compute_weight_metrics(inputs)
     selected = select_weight_profile_dates(daily)
     selected_dates = dict(zip(selected["controller_objective"], selected["date"]))
@@ -659,6 +656,7 @@ def run_pipeline(
     output.mkdir(parents=True, exist_ok=True)
     paths: dict[str, Path] = {}
     for key, table, filename in (
+        ("weight_minute_data", inputs.minute, "weight_minute_data.csv.gz"),
         ("weight_daily_metrics", daily, "weight_daily_metrics.csv"),
         ("weight_pooled_metrics", pooled, "weight_pooled_metrics.csv"),
         ("weight_selected_dates", selected, "weight_selected_dates.csv"),
@@ -729,7 +727,8 @@ def run_pipeline(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sweep-dir", type=Path, default=DEFAULT_SWEEP_DIR)
-    parser.add_argument("--observed-context", type=Path)
+    parser.add_argument("--observed-context", type=Path, default=Path("data/private/l14_merged_data_with_rain.csv"))
+    parser.add_argument("--observed-pooled", type=Path, default=DEFAULT_OBSERVED_POOLED_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--paper-fig-dir", type=Path, default=DEFAULT_PAPER_FIG_DIR)
     parser.add_argument("--validate-only", action="store_true")
@@ -741,6 +740,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     result = run_pipeline(
         sweep_dir=arguments.sweep_dir,
         observed_context_path=arguments.observed_context,
+        observed_pooled_path=arguments.observed_pooled,
         output_dir=arguments.output_dir,
         paper_fig_dir=arguments.paper_fig_dir,
         validate_only=arguments.validate_only,

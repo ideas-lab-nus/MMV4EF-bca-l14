@@ -22,7 +22,7 @@ The PV study is ancillary. Its training data, candidate fits, and training noteb
 
 `lstm64/checkpoints/univariate/` contains five univariate one-step target models—temperature, relative humidity, wind speed, wind direction, and solar irradiance—for seeds 17, 29, and 43. `lstm64/scalers.json` is required for inference. The inference code validates the family, target, seed, architecture, and payload shape before use.
 
-LSTM64 training code, training summaries, cached predictions, metrics, and future-disturbance tables are intentionally excluded. `scripts/build_lstm64_forecasts.py` recreates the required local outputs from authorized observations without retraining.
+LSTM64 training code, training histories/losses, cached predictions, metrics, and future-disturbance tables are intentionally excluded. Released checkpoint metadata contains only family, target, one-step flag, seed and selected epoch. The weights and scaler values are unchanged from the final study; checksums reflect removal of ancillary training histories. `scripts/build_lstm64_forecasts.py` recreates the required local outputs from authorized observations without retraining.
 
 The models were developed for the study building and date range represented in the manuscript. They are research artifacts, not safety-certified operational controllers, and should not be assumed to generalize to other buildings or climates.
 

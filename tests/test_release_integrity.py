@@ -441,6 +441,18 @@ class ReleaseIntegrityTests(unittest.TestCase):
             + "\n".join(failures),
         )
 
+    def test_binary_and_model_json_files_follow_exact_allowlist(self) -> None:
+        allowed_models = set(REQUIRED_MODELS)
+        failures = []
+        for path in self.files:
+            rel = path.relative_to(ROOT)
+            if path.suffix.lower() in {".pt", ".pth", ".json"} and rel not in allowed_models:
+                failures.append(relative(path))
+            if path.suffix.lower() in {".png", ".jpg", ".pdf", ".zip", ".gz", ".exe", ".dll"}:
+                if rel not in set(REQUIRED_STATIC_ASSETS):
+                    failures.append(relative(path))
+        self.assertFalse(failures, "Unapproved binary/model artifacts:\n" + "\n".join(failures))
+
     def test_notebooks_are_clean(self) -> None:
         failures: list[str] = []
         for path in self.files:

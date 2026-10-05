@@ -259,9 +259,9 @@ FIGURES = (
                (L14_CONTEXT, MAIN_TRAJECTORY, MAIN_DAILY_SPEC, MAIN_AGGREGATE_SPEC,
                 MAIN_VALIDATION_SPEC, LSTM_METRICS_SPEC), "discussion"),
     FigureSpec(15, "Daily state-slack-weight response", str(SCRIPT_WEIGHT.relative_to(ROOT)),
-               ("discussion_weight_daily_profiles.pdf",), (L14_CONTEXT, *SWEEP_SPECS), "weight"),
+               ("discussion_weight_daily_profiles.pdf",), (L14_CONTEXT, MAIN_TRAJECTORY, MAIN_DAILY_SPEC, MAIN_AGGREGATE_SPEC, MAIN_VALIDATION_SPEC, *SWEEP_SPECS), "weight"),
     FigureSpec(16, "Aggregate state-slack-weight sensitivity", str(SCRIPT_WEIGHT.relative_to(ROOT)),
-               ("discussion_weight_sensitivity.pdf",), (L14_CONTEXT, *SWEEP_SPECS), "weight"),
+               ("discussion_weight_sensitivity.pdf",), (L14_CONTEXT, MAIN_TRAJECTORY, MAIN_DAILY_SPEC, MAIN_AGGREGATE_SPEC, MAIN_VALIDATION_SPEC, *SWEEP_SPECS), "weight"),
     FigureSpec(17, "PV-model chronological holdout", str(SCRIPT_PV.relative_to(ROOT)),
                ("pv_appendix_b_holdout_plots.png",),
                (PV_DATA_SPEC, InputSpec(PV_MODEL, "PV coefficient model")), "pv"),
@@ -348,7 +348,7 @@ def _producer_problems(figures: Iterable[FigureSpec]) -> list[str]:
 
 
 def list_figures() -> None:
-    print("No.  Stage       Manuscript figure -> output")
+    print("No.  Stage       Release asset group -> output")
     for figure in FIGURES:
         output_text = ", ".join(f"figures/{name}" for name in figure.outputs)
         print(f"{figure.number:>2}   {figure.stage:<11} {figure.title} -> {output_text}")
@@ -568,6 +568,8 @@ def _run_weight(work_dir: Path, output_dir: Path, selected: set[int]) -> None:
             SCRIPT_WEIGHT,
             "--sweep-dir",
             SWEEP_DIR,
+            "--observed-pooled",
+            work_dir / "observed_future" / "observed_future_pooled_metrics.csv",
             "--observed-context",
             PRIVATE_L14,
             "--output-dir",
@@ -647,7 +649,7 @@ def reproduce(selected: set[int], work_dir: Path, output_dir: Path) -> None:
         _run_pmv(work_dir, output_dir)
 
     observed_work: Path | None = None
-    if selected.intersection(range(6, 15)):
+    if selected.intersection(range(6, 17)):
         observed_work = _run_observed(work_dir)
     if selected.intersection(range(6, 12)) and observed_work is not None:
         _copy_observed(selected, observed_work, output_dir)

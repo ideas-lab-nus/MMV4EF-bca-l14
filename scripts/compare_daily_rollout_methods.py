@@ -2,7 +2,7 @@
 """Generate daily rollout trajectory figures.
 
 The script mirrors the clean weekday segment filtering and chronological
-70/15/15 split used by ``linear_rollout_simulation.ipynb``.
+date partitions used by the final thermal-validation protocol.
 
 It produces one daily rollout plot per validation/test day. The nonlinear
 CNN-LSTM dynamic model and 5-minute frozen linearization use measured
@@ -41,6 +41,8 @@ from mpc_miqp_simulation_fast import (
     load_surrogate,
     make_continuous_segments,
 )
+
+from mmv4ef.data import causal_solar_fill
 
 plt.rcParams.update(
     {
@@ -210,10 +212,7 @@ def clean_working_hour_segments(
         df = df[~df["date"].dt.date.isin(excluded)]
 
     df = df.sort_values("date").reset_index(drop=True)
-    df.loc[:, "Solar Radiation"] = df["Solar Radiation"].interpolate(
-        method="nearest",
-        limit_direction="both",
-    )
+    df = causal_solar_fill(df)
 
     segments = [
         seg.reset_index(drop=True)
@@ -228,12 +227,11 @@ def clean_working_hour_segments(
 
 
 def split_segments(segments: list[pd.DataFrame]) -> dict[str, list[int]]:
-    split_index = int(len(segments) * 0.70)
-    val_index = int(len(segments) * 0.85)
+    dates = [seg.date.iloc[0] for seg in segments]
     return {
-        "train": list(range(0, split_index)),
-        "val": list(range(split_index, val_index)),
-        "test": list(range(val_index, len(segments))),
+        'train': [i for i, d in enumerate(dates) if d < pd.Timestamp('2024-10-01')],
+        'val': [i for i, d in enumerate(dates) if pd.Timestamp('2024-10-01') <= d < pd.Timestamp('2024-10-10')],
+        'test': [i for i, d in enumerate(dates) if pd.Timestamp('2024-10-10') <= d < pd.Timestamp('2024-10-31')],
     }
 
 
